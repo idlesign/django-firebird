@@ -106,9 +106,6 @@ class DatabaseOperations(BaseDatabaseOperations):
             return name2
         except ValueError:
             pass
-        if name == '%s':
-            self._quote_cache[name] = '%s__FB_MERGE__'
-            return '%s__FB_MERGE__'
         name2 = '"%s"' % util.truncate_name(name.strip('"'), self._max_name_length)
         self._quote_cache[name] = name2
         return name2
@@ -370,11 +367,7 @@ class FirebirdCursorWrapper(object):
         })
 
     def execute(self, query, params=()):
-        if query.find('__FB_MERGE__') > 0:
-            cquery = query.replace('__FB_MERGE__', '') % tuple(['"%s"' % p for p in params])
-            params = ()
-        else:
-            cquery = self.convert_query(query, len(params))
+        cquery = self.convert_query(query, len(params))
 
         try:
             return self.cursor.execute(cquery, params)
