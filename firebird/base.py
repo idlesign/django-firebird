@@ -373,7 +373,8 @@ class FirebirdCursorWrapper(object):
         if query.find('__FB_MERGE__') > 0:
             cquery = query.replace('__FB_MERGE__', '') % params
             params = ()
-        cquery = self.convert_query(query, len(params))
+        else:
+            cquery = self.convert_query(query, len(params))
 
         try:
             return self.cursor.execute(cquery, params)
