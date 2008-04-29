@@ -159,7 +159,7 @@ def validate_rowsize(opts):
     for f in opts.local_fields:
         try:
             db_type = f.db_type().strip('"')
-        except FieldDoesNotExist:
+        except:
             db_type = 'integer'
         columns.append((db_type, f.get_internal_type(), f.max_length, f.encoding))
     columns_simple = [col[0] for col in columns] 
