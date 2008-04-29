@@ -152,9 +152,16 @@ def get_data_size(data_type, max_length=100, char_bytes=None):
 
 def validate_rowsize(opts):
     from django.db import connection
+    from django.db.models.fields import FieldDoesNotExist
     errs = set()
     row_size = 0
-    columns = [(f.db_type().strip('"'), f.get_internal_type(), f.max_length, f.encoding) for f in opts.local_fields]
+    columns = []
+    for f in opts.local_fields:
+        try:
+            db_type = f.db_type().strip('"')
+        except FieldDoesNotExist:
+            db_type = 'integer'
+        columns.append((db_type, f.get_internal_type(), f.max_length, f.encoding))
     columns_simple = [col[0] for col in columns] 
     text_field_type = '"TextField"'
     max_allowed_bytes = 32765

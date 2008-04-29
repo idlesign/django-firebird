@@ -7,6 +7,11 @@ The egenix mx (mx.DateTime) is NOT required
 Database charset should be UNICODE_FSS or UTF8 (FireBird 2.0+)
 To use UTF8 encoding add FIREBIRD_CHARSET = 'UTF8' to your settings.py 
 UNICODE_FSS works with all versions and uses less memory
+
+Note, that UNICODE_FSS is actually the same thing that UTF8 in most versions 
+of MySQL, It *is* 3-bytes UTF8 encoding. Firebird's 'UTF8' is 4-byte UTF8 
+encoding and makes sense only if you need support for extremely rare 
+languages/scripts.
 """
 
 import sys
@@ -22,11 +27,11 @@ from django.db.backends.firebird import query
 
 try:
     import kinterbasdb as Database
-    Database.init(type_conv=200)
 except ImportError, e:
     from django.core.exceptions import ImproperlyConfigured
     raise ImproperlyConfigured, "Error loading KInterbasDB module: %s" % e
 
+Database.init(type_conv=200)
 DatabaseError = Database.DatabaseError
 IntegrityError = Database.IntegrityError
 
