@@ -9,6 +9,7 @@ from django.conf import settings
 
 import sys
 import os
+import re
 import codecs
 import warnings
 
