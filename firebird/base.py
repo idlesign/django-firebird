@@ -106,6 +106,9 @@ class DatabaseOperations(BaseDatabaseOperations):
             return name2
         except ValueError:
             pass
+        if name == '%s':
+            self._quote_cache[name] = name
+            return name
         name2 = '"%s"' % util.truncate_name(name.strip('"'), self._max_name_length)
         self._quote_cache[name] = name2
         return name2
