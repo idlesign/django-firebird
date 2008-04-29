@@ -129,7 +129,7 @@ def get_data_size(data_type, max_length=100, char_bytes=None):
         'DateField':                     16,
         'DateTimeField':                 16,
         'DecimalField':                  16,
-        'FileField':                     char_bytes*max_length,
+        'FileField':                     char_bytes * max_length,
         'FilePathField':                 'varchar(%(max_length)s)',
         'FloatField':                    16,
         'ImageField':                    char_bytes*max_length,
@@ -140,13 +140,13 @@ def get_data_size(data_type, max_length=100, char_bytes=None):
         'PhoneNumberField':              20, 
         'PositiveIntegerField':          8,
         'PositiveSmallIntegerField':     4,
-        'SlugField':                     char_bytes*max_length,
+        'SlugField':                     char_bytes * max_length,
         'SmallIntegerField':             4,
         'TextBlob':                      8,
         'TextField':                     32767,
         'TimeField':                     16,
         'URLField':                      max_length,
-        'USStateField':                  char_bytes*2
+        'USStateField':                  char_bytes * 2
     }
     return size_map[data_type]
 
@@ -186,14 +186,14 @@ def validate_rowsize(opts):
                     coltype = 'CharField'
                 row_size += get_data_size(coltype, max_length, charbytes)
         if row_size > 65536:
-            max_allowed_bytes = int( (max_allowed_bytes/num_text_fields) - (row_size-65536) )
+            max_allowed_bytes = int((max_allowed_bytes/num_text_fields) - (row_size - 65536))
             n = max_allowed_bytes / connection.BYTES_PER_DEFAULT_CHAR
             if n > 512:
                 text_field_type = 'varchar(%s)' % n
-                errs.add("Row size limit in %s: Maximum number of characters in TextFields has changed to %s."
+                errs.add("Row size limit in %s: Maximum number of characters in TextFields will be automatically changed to %s."
                                % (opts.db_table, n))
             else:
-                errs.add("Row size limit in %s: Field type changed to BLOB."
+                errs.add("Row size limit in %s: Field type will be automatically changed to BLOB."
                                % opts.db_table)
                 # Swich to blobs if size is too small (<512)    
                 text_field_type = 'blob sub_type text'
@@ -249,12 +249,12 @@ def validate_index_limit(f, col_type, opts):
                     if (old_length > max_length) and (ascii_length < max_length) and not f.encoding:
                         strip2ascii = True
                     elif old_length > max_length:
-                        strip2ascii = False #We change it here
+                        strip2ascii = False
                         f.max_length = max_length
                         if not f.encoding:
                             f.encoding = 'ascii'
                         msg =  "Index limit: Character set of the '%s' field (table %s) "
-                        msg += "has changed to ASCII encoding to fit %s-byte limit in FB %s"
+                        msg += "will be automatically changed to ASCII encoding to fit %s-byte limit in FB %s"
                         if not f.encoding:
                             if not page_size:
                                 errs.add(msg % (f.column, opts.db_table, connection.ops.index_limit, fb_version))
@@ -263,11 +263,11 @@ def validate_index_limit(f, col_type, opts):
                                 errs.add(msg % (f.column, opts.db_table, connection.ops.index_limit, fb_version, page_size))
                         if max_length != ascii_length:
                             errs.add("Index limit: the maximum length of '%s' is %s instead of %s"
-                                % (f.column, max_length, ascii_length))   
+                                % (f.column, max_length, ascii_length))
         if strip2ascii:
             f.encoding = 'ascii'
             msg =  "Index limit: Character set of the '%s' field (table %s) "
-            msg += "has changed to ASCII to fit %s-byte limit in FB %s"
+            msg += "will be automatically changed to ASCII to fit %s-byte limit in FB %s"
             if not page_size:
                 errs.add(msg % (f.column, opts.db_table, connection.ops.index_limit, fb_version))
             else:
