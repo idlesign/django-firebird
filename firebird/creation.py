@@ -38,7 +38,7 @@ DATA_TYPES = {
     'FileField':                     'varchar(%(max_length)s)',
     'FilePathField':                 'varchar(%(max_length)s)',
     'FloatField':                    'double precision',
-    'ImageField':                    '"varchar(%(max_length)s)"',
+    'ImageField':                    'varchar(%(max_length)s)',
     'IntegerField':                  'integer',
     'IPAddressField':                'varchar(15) CHARACTER SET ASCII',
     'NullBooleanField':              '"NullBooleanField"', 
