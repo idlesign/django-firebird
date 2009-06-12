@@ -1,425 +1,173 @@
 """
 Firebird database backend for Django.
 
-Requires KInterbasDB 3.2: http://kinterbasdb.sourceforge.net/
-The egenix mx (mx.DateTime) is NOT required
-
-Database charset should be UNICODE_FSS or UTF8 (FireBird 2.0+)
-To use UTF8 encoding add FIREBIRD_CHARSET = 'UTF8' to your settings.py 
-UNICODE_FSS works with all versions and uses less memory
-
-Note, that UNICODE_FSS is actually the same thing that UTF8 in most versions 
-of MySQL, It *is* 3-bytes UTF8 encoding. Firebird's 'UTF8' is 4-byte UTF8 
-encoding and makes sense only if you need support for extremely rare 
-languages/scripts.
+Requires kinterbasdb: http://www.firebirdsql.org/index.php?op=devel&sub=python
 """
 
-import sys
+import os
 import datetime
+import time
 try:
-    import decimal
+    from decimal import Decimal
 except ImportError:
-    from django.utils import _decimal as decimal    # for Python 2.3
-
-from django.db.backends import BaseDatabaseWrapper, BaseDatabaseFeatures, BaseDatabaseOperations, util
-from django.db.backends.firebird.creation import TEST_MODE
-from django.db.backends.firebird import query
+    from django.utils._decimal import Decimal
 
 try:
     import kinterbasdb as Database
 except ImportError, e:
     from django.core.exceptions import ImproperlyConfigured
-    raise ImproperlyConfigured, "Error loading KInterbasDB module: %s" % e
+    raise ImproperlyConfigured("Error loading kinterbasdb module: %s" % e)
 
-Database.init(type_conv=200)
+
+
+from django.db.backends import *
+from django.db.backends.firebird.client import DatabaseClient
+from django.db.backends.firebird.creation import DatabaseCreation
+from django.db.backends.firebird.introspection import DatabaseIntrospection
+from django.utils.encoding import smart_str, smart_unicode, force_unicode
+
 DatabaseError = Database.DatabaseError
 IntegrityError = Database.IntegrityError
-
+OperationalError = Database.OperationalError
 
 class DatabaseFeatures(BaseDatabaseFeatures):
-    allows_unique_and_pk = False
-    always_quote = True
-    inline_fk_references = False 
-    needs_datetime_string_cast = False
-    needs_upper_for_iops = True
-    order_by_ordinal = True
-    uses_custom_lookups = True
     uses_custom_query_class = True
-    supports_constraints = TEST_MODE < 2
 
-################################################################################
-# Database operations (db.connection.ops)  
 class DatabaseOperations(BaseDatabaseOperations):
-    """
-    This class encapsulates all backend-specific differences, such as the way
-    a backend performs ordering or calculates the ID of a recently-inserted
-    row.
-    """
-    # Utility ops: names, version, page size etc.: 
-    _max_name_length = 31
-    def __init__(self):
-        self._firebird_version = None
-        self._page_size = None
-        self._quote_cache = {}
-    
-    def get_generator_name(self, name):
-        return '%s$G' % util.truncate_name(name.strip('"'), self._max_name_length-2).upper()
-        
-    def get_trigger_name(self, name):
-        return '%s$T' % util.truncate_name(name.strip('"'), self._max_name_length-2).upper() 
-    
-    def _get_firebird_version(self):
-        if self._firebird_version is None:
-            from django.db import connection
-            if not connection.connection:
-                connection.cursor()
-            self._firebird_version = [int(val) for val in connection.server_version.split()[-1].split('.')]
-        return self._firebird_version
-    firebird_version = property(_get_firebird_version)
-  
-    def reference_name(self, r_col, col, r_table, table):
-        base_name = util.truncate_name('%s$%s' % (r_col, col), self._max_name_length-5)
-        return util.truncate_name(('%s$%x' % (base_name, abs(hash((r_table, table))))), self._max_name_length).upper()
-    
-    def _get_page_size(self):
-        if self._page_size is None:
-            from django.db import connection
-            self._page_size = connection.database_info(Database.isc_info_page_size, 'i')
-        return self._page_size
-    page_size = property(_get_page_size)
-    
-    def _get_index_limit(self):
-        if self.firebird_version[0] < 2:
-            self._index_limit = 252 
+
+    def autoinc_sql(self, table, column):
+        # To simulate auto-incrementing primary keys in Oracle, we have to
+        # create a sequence and a trigger.
+        gn_name = self.quote_name(self.get_generator_name(table))
+        tr_name = self.quote_name(self.get_trigger_name(table))
+        tbl_name = self.quote_name(table)
+        col_name = self.quote_name(column)
+        generator_sql = """CREATE GENERATOR %(gn_name)s""" % locals()
+        trigger_sql = """
+            CREATE TRIGGER %(tr_name)s FOR %(tbl_name)s
+            BEFORE INSERT
+            AS BEGIN
+            NEW.%(col_name)s = GEN_ID(%(gn_name)s, 1);
+            END""" % locals()
+        return generator_sql, trigger_sql
+
+    def date_extract_sql(self, lookup_type, field_name):
+        if lookup_type == 'week_day':
+            # TO_CHAR(field, 'D') returns an integer from 1-7, where 1=Sunday.
+            return "TO_CHAR(%s, 'D')" % field_name
         else:
-            page_size = self._get_page_size()
-            self._index_limit = page_size/4
-        return self._index_limit
-    index_limit = property(_get_index_limit)
-    
-    def max_name_length(self):
-        return self._max_name_length
-    
-    def quote_name(self, name):
-        try:
-            return self._quote_cache[name]
-        except KeyError:
-            pass
-        try:
-            name2 = int(name)
-            self._quote_cache[name] = name2
-            return name2
-        except ValueError:
-            pass
-        name2 = '"%s"' % util.truncate_name(name.strip('"'), self._max_name_length)
-        self._quote_cache[name] = name2
-        return name2
+            return "EXTRACT(%s FROM %s)" % (lookup_type.upper(), field_name)
 
-    def field_cast_sql(self, db_type):
-        return '%s'
-
-    ############################################################################
-    # Basic SQL ops:    
-    def last_insert_id(self, cursor, table_name, pk_name=None):
-        generator_name = self.get_generator_name(table_name)
-        cursor.execute('SELECT GEN_ID(%s, 0) from RDB$DATABASE' % generator_name)
-        return cursor.fetchone()[0]
-
-    def date_extract_sql(self, lookup_type, column_name):
-        # lookup_type is 'year', 'month', 'day'
-        return "EXTRACT(%s FROM %s)" % (lookup_type, column_name)
-
-    def date_trunc_sql(self, lookup_type, column_name):
+    def date_trunc_sql(self, lookup_type, field_name):
         if lookup_type == 'year':
-             sql = "EXTRACT(year FROM %s)||'-01-01 00:00:00'" % column_name
+             sql = "EXTRACT(year FROM %s)||'-01-01 00:00:00'" % field_name
         elif lookup_type == 'month':
-            sql = "EXTRACT(year FROM %s)||'-'||EXTRACT(month FROM %s)||'-01 00:00:00'" % (column_name, column_name)
+            sql = "EXTRACT(year FROM %s)||'-'||EXTRACT(month FROM %s)||'-01 00:00:00'" % (field_name, field_name)
         elif lookup_type == 'day':
-            sql = "EXTRACT(year FROM %s)||'-'||EXTRACT(month FROM %s)||'-'||EXTRACT(day FROM %s)||' 00:00:00'" % (column_name, column_name, column_name)
+            sql = "EXTRACT(year FROM %s)||'-'||EXTRACT(month FROM %s)||'-'||EXTRACT(day FROM %s)||' 00:00:00'" % (field_name, field_name, field_name)
         return "CAST(%s AS TIMESTAMP)" % sql
 
-    #def datetime_cast_sql(self):
-    #    return None
+    def last_insert_id(self, cursor, table_name, pk_name):
+        cursor.execute('SELECT GEN_ID(%s, 0) FROM rdb$database' %
+                                        (self.get_generator_name(table_name),))
+        return cursor.fetchone()[0]
 
-    def drop_sequence_sql(self, table):
-        return "DROP GENERATOR %s;" % self.get_generator_name(table)
+    def max_name_length(self):
+        return 31
 
-    def drop_foreignkey_sql(self):
-        return "DROP CONSTRAINT"
-        
-    def limit_offset_sql(self, limit, offset=None):
-        return ''
-
-    def random_function_sql(self):
-        return "rand()"
-
-    def pk_default_value(self):
-        """
-        Returns the value to use during an INSERT statement to specify that
-        the field should use its default value.
-        """
-        return 'NULL'
-
-    def lookup_cast(self, lookup_type):
-        if lookup_type in ('iexact', 'icontains', 'istartswith', 'iendswith'):
-            return "UPPER(%s)"
-        return "%s"
-
-    def start_transaction_sql(self):
-        return ""
-
-    def fulltext_search_sql(self, field_name):
-        # We use varchar for TextFields so this is possible
-        # Look at http://www.volny.cz/iprenosil/interbase/ip_ib_strings.htm
-        return '%%s CONTAINING %s' % self.quote_name(field_name)
-
-    ############################################################################
-    # Advanced SQL ops:
-    def autoinc_sql(self, table_name, column_name):
-        """
-        To simulate auto-incrementing primary keys in Firebird, we have to
-        create a generator and a trigger.
-
-        Create the generators and triggers names based only on table name
-        since django only support one auto field per model
-        """
-        generator_name = self.get_generator_name(table_name)
-        trigger_name = self.get_trigger_name(table_name)
-        column_name = self.quote_name(column_name)
-        table_name = self.quote_name(table_name)
-
-        generator_sql = "CREATE GENERATOR %s;" % generator_name   
-        trigger_sql = "\n".join([
-            "CREATE TRIGGER %s FOR %s" %  (trigger_name, table_name),
-            "ACTIVE BEFORE INSERT POSITION 0 AS",
-            "BEGIN", 
-            "  IF ((NEW.%s IS NULL) OR (NEW.%s = 0)) THEN" % (column_name, column_name),
-            "  BEGIN", 
-            "    NEW.%s = GEN_ID(%s, 1);" % (column_name, generator_name),
-            "  END",
-            "END;"])
-        return (generator_sql, trigger_sql)
-
-    def sequence_reset_sql(self, style, model_list):
-        from django.db import models
-        output = []
-        sql = ['%s %s %s' % (style.SQL_KEYWORD('CREATE OR ALTER PROCEDURE'),
-                             style.SQL_TABLE('"GENERATOR_RESET"'),
-                             style.SQL_KEYWORD('AS'))]
-        sql.append('%s %s' % (style.SQL_KEYWORD('DECLARE VARIABLE'), style.SQL_COLTYPE('start_val integer;')))
-        sql.append('%s %s' % (style.SQL_KEYWORD('DECLARE VARIABLE'), style.SQL_COLTYPE('gen_val integer;')))
-        sql.append('\t%s' % style.SQL_KEYWORD('BEGIN'))
-        sql.append('\t\t%s %s %s %s %s %s;' % (style.SQL_KEYWORD('SELECT MAX'), style.SQL_FIELD('(%(col)s)'),
-                                           style.SQL_KEYWORD('FROM'), style.SQL_TABLE('%(table)s'),
-                                           style.SQL_KEYWORD('INTO'), style.SQL_COLTYPE(':start_val')))
-        sql.append('\t\t%s (%s %s) %s' % (style.SQL_KEYWORD('IF'), style.SQL_COLTYPE('start_val'),
-                                    style.SQL_KEYWORD('IS NULL'), style.SQL_KEYWORD('THEN')))
-        sql.append('\t\t\t%s = %s(%s, 1 - %s(%s, 0));' %\
-            (style.SQL_COLTYPE('gen_val'), style.SQL_KEYWORD('GEN_ID'), style.SQL_TABLE('%(gen)s'),
-             style.SQL_KEYWORD('GEN_ID'), style.SQL_TABLE('%(gen)s')))
-        sql.append('\t\t%s' % style.SQL_KEYWORD('ELSE'))
-        sql.append('\t\t\t%s = %s(%s, %s - %s(%s, 0));' %\
-            (style.SQL_COLTYPE('gen_val'), style.SQL_KEYWORD('GEN_ID'),
-             style.SQL_TABLE('%(gen)s'), style.SQL_COLTYPE('start_val'), style.SQL_KEYWORD('GEN_ID'),
-             style.SQL_TABLE('%(gen)s')))
-        sql.append('\t\t%s;' % style.SQL_KEYWORD('EXIT'))
-        sql.append('%s;' % style.SQL_KEYWORD('END'))
-        sql ="\n".join(sql)
-        for model in model_list:
-            for f in model._meta.fields:
-                if isinstance(f, models.AutoField):
-                    generator_name = self.get_generator_name(model._meta.db_table)
-                    column_name = self.quote_name(f.db_column or f.name)
-                    table_name = self.quote_name(model._meta.db_table)
-                    output.append(sql % {'col' : column_name, 'table' : table_name, 'gen' : generator_name})
-                    output.append('%s %s;' % (style.SQL_KEYWORD('EXECUTE PROCEDURE'), 
-                                              style.SQL_TABLE('"GENERATOR_RESET"')))
-                    break # Only one AutoField is allowed per model, so don't bother continuing.
-            for f in model._meta.many_to_many:
-                generator_name = self.get_generator_name(f.m2m_db_table())
-                table_name = self.quote_name(f.m2m_db_table())
-                column_name = '"id"'
-                output.append(sql % {'col' : column_name, 'table' : table_name, 'gen' : generator_name})
-                output.append('%s %s;' % (style.SQL_KEYWORD('EXECUTE PROCEDURE'), 
-                                          style.SQL_TABLE('"GENERATOR_RESET"')))
-        return output
-    
-    def sql_flush(self, style, tables, sequences):
-        if tables:
-            sql = ['%s %s %s;' % \
-                    (style.SQL_KEYWORD('DELETE'),
-                     style.SQL_KEYWORD('FROM'),
-                     style.SQL_TABLE(self.quote_name(table))
-                     ) for table in tables]
-            for generator_info in sequences:
-                table_name = generator_info['table']
-                query = "%s %s %s 0;" % (style.SQL_KEYWORD('SET GENERATOR'), 
-                    self.get_generator_name(table_name), style.SQL_KEYWORD('TO'))
-                sql.append(query)
-            return sql
-        else:
-            return []
-
-    def get_db_prep_lookup(self, lookup_type, value):
-        "Returns field's value prepared for database lookup."
-        from django.db.models.fields import prep_for_like_query, QueryWrapper
-        if hasattr(value, 'as_sql'):
-            sql, params = value.as_sql()
-            return QueryWrapper(('(%s)' % sql), params)
-        if lookup_type in ('exact', 'iexact', 'regex', 'iregex', 'gt', 'gte', 'lt', 
-            'lte', 'month', 'day', 'search', 'icontains', 
-            'startswith', 'istartswith'):
-            return [value]
-        elif lookup_type in ('range', 'in'):
-            return value
-        elif lookup_type in ('contains',):
-            return ["%%%s%%" % prep_for_like_query(value)]
-        elif lookup_type in ('endswith', 'iendswith'):
-            return ["%%%s" % prep_for_like_query(value)]
-        elif lookup_type == 'isnull':
-            return []
-        elif lookup_type == 'year':
-            try:
-                value = int(value)
-            except ValueError:
-                raise ValueError("The __year lookup type requires an integer argument")
-            return [datetime.datetime(value, 1, 1, 0, 0, 0), datetime.datetime(value, 12, 31, 23, 59, 59, 999999)]
-        raise TypeError("Field has invalid lookup: %s" % lookup_type)
+    def convert_values(self, value, field):
+        return super(DatabaseOperations, self).convert_values(value, field)
 
     def query_class(self, DefaultQueryClass):
-        return query.query_class(DefaultQueryClass, Database)
+        class FirebirdQuery(DefaultQueryClass):
+            def as_sql(self, with_limits=True, with_col_aliases=False):
+                """
+                Return custom SQL. Use FIRST and SKIP statement instead of
+                LIMIT and OFFSET.
+                """
+                self.pre_sql_setup()
+                out_cols = self.get_columns(with_col_aliases)
+                ordering, ordering_group_by = self.get_ordering()
 
-################################################################################
-# Cursor wrapper        
-class FirebirdCursorWrapper(object):
-    """
-    Django uses "format" ('%s') style placeholders, but Firebird uses "qmark" ('?') style.
-    This fixes it -- but note that if you want to use a literal "%s" in a query,
-    you'll need to use "%%s".
-    
-    We also do all automatic type conversions here.
-    """
-    import kinterbasdb.typeconv_datetime_stdlib as tc_dt
-    import kinterbasdb.typeconv_fixed_decimal as tc_fd
-    import kinterbasdb.typeconv_text_unicode as tc_tu
-    import django.utils.encoding as dj_ue
+                from_, f_params = self.get_from_clause()
 
-    def ascii_conv_in(self, text):
-        if text is not None:  
-            return self.dj_ue.smart_str(text, 'ascii')
+                qn = self.quote_name_unless_alias
+                where, w_params = self.where.as_sql(qn=qn)
+                having, h_params = self.having.as_sql(qn=qn)
+                params = []
+                for val in self.extra_select.itervalues():
+                    params.extend(val[1])
 
-    def ascii_conv_out(self, text):
-        if text is not None:
-            return self.dj_ue.smart_unicode(text)    
+                result = ['SELECT']
+                if with_limits:
+                    if self.high_mark is not None:
+                        result.append('FIRST %d' % (
+                                        self.high_mark - self.low_mark))
+                    if self.low_mark:
+                        if self.high_mark is None:
+                            val = self.connection.ops.no_limit_value()
+                            if val:
+                                result.append('FIRST %d' % val)
+                        result.append('SKIP %d' % self.low_mark)
+                if self.distinct:
+                    result.append('DISTINCT')
+                result.append(', '.join(out_cols + self.ordering_aliases))
 
-    def blob_conv_in(self, text): 
-        return self.tc_tu.unicode_conv_in((self.dj_ue.smart_unicode(text), self.FB_CHARSET_CODE))
+                result.append('FROM')
+                result.extend(from_)
+                params.extend(f_params)
 
-    def blob_conv_out(self, text):
-        return self.tc_tu.unicode_conv_out((text, self.FB_CHARSET_CODE))   
+                if where:
+                    result.append('WHERE %s' % where)
+                    params.extend(w_params)
+                if self.extra_where:
+                    if not where:
+                        result.append('WHERE')
+                    else:
+                        result.append('AND')
+                    result.append(' AND '.join(self.extra_where))
 
-    def fixed_conv_in(self, (val, scale)):
-        if val is not None:
-            if isinstance(val, basestring):
-                val = decimal.Decimal(val)
-            return self.tc_fd.fixed_conv_in_precise((val, scale))
+                grouping, gb_params = self.get_grouping()
+                if grouping:
+                    if ordering:
+                        # If the backend can't group by PK (i.e., any database
+                        # other than MySQL), then any fields mentioned in the
+                        # ordering clause needs to be in the group by clause.
+                        if not self.connection.features.allows_group_by_pk:
+                            for col, col_params in ordering_group_by:
+                                if col not in grouping:
+                                    grouping.append(str(col))
+                                    gb_params.extend(col_params)
+                    else:
+                        ordering = self.connection.ops.force_no_ordering()
+                    result.append('GROUP BY %s' % ', '.join(grouping))
+                    params.extend(gb_params)
 
-    def timestamp_conv_in(self, timestamp):
-        if isinstance(timestamp, basestring):
-            #Replaces 6 digits microseconds to 4 digits allowed in Firebird
-            timestamp = timestamp[:24]
-        return self.tc_dt.timestamp_conv_in(timestamp)
+                if having:
+                    result.append('HAVING %s' % having)
+                    params.extend(h_params)
 
-    def time_conv_in(self, value):
-        import datetime
-        if isinstance(value, datetime.datetime):
-            value = datetime.time(value.hour, value.minute, value.second, value.microsecond)
-        return self.tc_dt.time_conv_in(value)   
+                if ordering:
+                    result.append('ORDER BY %s' % ', '.join(ordering))
 
-    def date_conv_in(self, value):
-        if isinstance(value, basestring):
-            #Replaces 6 digits microseconds to 4 digits allowed in Firebird
-            value = value[:24]
-        return self.tc_dt.date_conv_in(value)
+                params.extend(self.extra_params)
+                return ' '.join(result), tuple(params)
+        return FirebirdQuery
 
-    def unicode_conv_in(self, text):
-        if text[0] is not None:
-            return self.tc_tu.unicode_conv_in((self.dj_ue.smart_unicode(text[0]), self.FB_CHARSET_CODE))
+    def quote_name(self, name):
+        if not name.startswith('"') and not name.endswith('"'):
+            name = '"%s"' % util.truncate_name(name, self.max_name_length())
+        return name.upper()
 
-    def __init__(self, cursor, connection):   
-        self.cursor = cursor
-        self._connection = connection
-        self.FB_CHARSET_CODE = 3 #UNICODE_FSS
-        if connection.charset == 'UTF8':
-            self.FB_CHARSET_CODE = 4 # UTF-8 with Firebird 2.0+
-        self.cursor.set_type_trans_in({
-            'DATE':             self.date_conv_in,
-            'TIME':             self.time_conv_in,
-            'TIMESTAMP':        self.timestamp_conv_in,
-            'FIXED':            self.fixed_conv_in,
-            'TEXT':             self.ascii_conv_in,
-            'TEXT_UNICODE':     self.unicode_conv_in,
-            'BLOB':             self.blob_conv_in
-        })
-        self.cursor.set_type_trans_out({
-            'DATE':             self.tc_dt.date_conv_out,
-            'TIME':             self.tc_dt.time_conv_out,
-            'TIMESTAMP':        self.tc_dt.timestamp_conv_out,
-            'FIXED':            self.tc_fd.fixed_conv_out_precise,
-            'TEXT':             self.ascii_conv_out,
-            'TEXT_UNICODE':     self.tc_tu.unicode_conv_out,
-            'BLOB':             self.blob_conv_out
-        })
+    def get_generator_name(self, table_name):
+        return '%s_GN' % util.truncate_name(table_name, self.max_name_length() - 3).upper()
 
-    def execute(self, query, params=()):
-        cquery = self.convert_query(query, len(params))
+    def get_trigger_name(self, table_name):
+        name_length = DatabaseOperations().max_name_length() - 3
+        return '%s_TR' % util.truncate_name(table_name, self.max_name_length() - 3).upper()
 
-        try:
-            return self.cursor.execute(cquery, params)
-        except Database.ProgrammingError, e:
-            err_no = int(str(e).split()[0].strip(',()'))
-            output = ["Execute query error. FB error No. %i" % err_no]
-            output.extend(str(e).split("'")[1].split('\\n'))
-            output.append("Query:")
-            output.append(cquery)
-            output.append("Parameters:")
-            output.append(str(params))
-            if err_no in (-803,):
-                raise IntegrityError("\n".join(output))
-            raise DatabaseError("\n".join(output))
-
-    def executemany(self, query, param_list):
-        try:
-            cquery = self.convert_query(query, len(param_list[0]))
-        except IndexError:
-            return None
-        return self.cursor.executemany(cquery, param_list)
-
-    def convert_query(self, query, num_params):
-        return query % tuple("?" * num_params)
-
-    def fetchone(self):
-        return self.cursor.fetchone()
-
-    def fetchmany(self, size=None):
-        if size is None:
-            return self.cursor.fetchmany()
-        return self.cursor.fetchmany(size)
-
-    def fetchall(self):
-        return self.cursor.fetchall()
-
-    def __getattr__(self, attr):
-        if attr in self.__dict__:
-            return self.__dict__[attr]
-        else:
-            return getattr(self.cursor, attr)
-
-################################################################################
-# DatabaseWrapper(db.connection)  
 class DatabaseWrapper(BaseDatabaseWrapper):
-    features = DatabaseFeatures()
-    ops = DatabaseOperations()
+
     operators = {
         'exact': '= %s',
         'iexact': '= UPPER(%s)',
@@ -432,55 +180,88 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         'startswith': 'STARTING WITH %s', #looks to be faster then LIKE
         'endswith': "LIKE %s ESCAPE'\\'",
         'istartswith': 'STARTING WITH UPPER(%s)',
-        'iendswith': "LIKE UPPER(%s) ESCAPE'\\'"
+        'iendswith': "LIKE UPPER(%s) ESCAPE'\\'",
     }
 
-    def __init__(self, **kwargs):
-        from django.conf import settings
-        super(DatabaseWrapper, self).__init__(**kwargs)
-        self.charset = 'UNICODE_FSS'
-        self.FB_MAX_VARCHAR = 10921 #32765 MAX /3
-        self.BYTES_PER_DEFAULT_CHAR = 3
-        if hasattr(settings, 'FIREBIRD_CHARSET'):
-            if settings.FIREBIRD_CHARSET == 'UTF8':
-                self.charset = 'UTF8' 
-                self.FB_MAX_VARCHAR = 8191 #32765 MAX /4
-                self.BYTES_PER_DEFAULT_CHAR = 4
-        
-    def _connect(self, settings):
-        if settings.DATABASE_NAME == '':
-            from django.core.exceptions import ImproperlyConfigured
-            raise ImproperlyConfigured, "You need to specify DATABASE_NAME in your Django settings file."
-        kwargs = {'charset' : self.charset }
-        if settings.DATABASE_HOST:
-            kwargs['dsn'] = "%s:%s" % (settings.DATABASE_HOST, settings.DATABASE_NAME)
-        else:
-            kwargs['dsn'] = "localhost:%s" % settings.DATABASE_NAME
-        if settings.DATABASE_USER:
-            kwargs['user'] = settings.DATABASE_USER
-        if settings.DATABASE_PASSWORD:
-            kwargs['password'] = settings.DATABASE_PASSWORD
-        self.connection = Database.connect(**kwargs)
-        assert self.connection.charset == self.charset
+    def __init__(self, *args, **kwargs):
+        super(DatabaseWrapper, self).__init__(*args, **kwargs)
 
-    def cursor(self):
-        from django.conf import settings
-        cursor = self._cursor(settings)
-        if settings.DEBUG:
-            self._debug_cursor = self.make_debug_cursor(cursor)
-            return self._debug_cursor
-        return cursor
+        self.features = DatabaseFeatures()
+        self.ops = DatabaseOperations()
+        self.client = DatabaseClient(self)
+        self.creation = DatabaseCreation(self)
+        self.introspection = DatabaseIntrospection(self)
+        self.validation = BaseDatabaseValidation()
 
-    def _cursor(self, settings):
+    def _cursor(self):
         if self.connection is None:
-            self._connect(settings)
-        cursor = self.connection.cursor()
-        cursor = FirebirdCursorWrapper(cursor, self)
+            settings_dict = self.settings_dict
+            db_options = {}
+            conn = {'charset': 'UNICODE_FSS'}            
+            if 'DATABASE_OPTIONS' in settings_dict:
+                db_options = settings_dict['DATABASE_OPTIONS']
+            conn['charset'] = db_options.get('charset', conn['charset'])
+            if settings_dict['DATABASE_NAME'] == '':
+                from django.core.exceptions import ImproperlyConfigured
+                raise ImproperlyConfigured("You need to specify DATABASE_NAME in your Django settings file.")
+            conn['dsn'] = settings_dict['DATABASE_NAME']
+            if settings_dict['DATABASE_HOST']:
+                conn['dsn'] = settings_dict['DATABASE_HOST'] + ':' + conn['dsn']
+            if settings_dict['DATABASE_USER']:
+                conn['user'] = settings_dict['DATABASE_USER']
+            if settings_dict['DATABASE_PASSWORD']:
+                conn['password'] = settings_dict['DATABASE_PASSWORD']
+            try:
+                self.connection = Database.connect(**conn)
+            except OperationalError:
+                self.connection = Database.create_database(
+                    "create database '%s' user '%s' password '%s' default character set %s"
+                                % (conn['dsn'], conn['user'], conn['password'], conn['charset']))
+            self.connection.set_type_trans_in({
+                'TIMESTAMP' : (lambda s: smart_str(s)[:24]),
+                'BOOLEAN' : (lambda b: 1 if b else 0),
+                'TEXT' : smart_str,
+                'BLOB' : smart_str,
+                })
+        cursor = FirebirdCursorWrapper(self.connection)
         return cursor
+
+class FirebirdCursorWrapper(object):
+    """
+    Django uses "format" style placeholders, but firebird uses "qmark" style.
+    This fixes it -- but note that if you want to use a literal "%s" in a query,
+    you'll need to use "%%s".
+    """
+    def __init__(self, connection):
+        self.cursor = connection.cursor()
 
     def __getattr__(self, attr):
-        if attr in self.__dict__:
-            return self.__dict__[attr]
-        else:
-            return getattr(self.connection, attr)
+        return getattr(self.cursor, attr)
+
+    def execute(self, query, params=()):
+        #print 'cursor.execute()', query, params
+        query = self.convert_query(query, len(params))
+        return self.cursor.execute(query, params)
+
+    def executemany(self, query, param_list):
+        #print 'cursor.executemany()', query, param_list
+        try:
+          query = self.convert_query(query, len(param_list[0]))
+          return self.cursor.executemany(query, param_list)
+        except (IndexError,TypeError):
+          # No parameter list provided
+          return None
+
+    def convert_query(self, query, num_params):
+        return query % tuple("?" * num_params)
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchmany(self, size=None):
+        return self.cursor.fetchmany(size)
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
 
