@@ -26,6 +26,7 @@ from django.db.backends.firebird.creation import DatabaseCreation
 from django.db.backends.firebird.introspection import DatabaseIntrospection
 from django.utils.encoding import smart_str, smart_unicode, force_unicode
 
+
 DatabaseError = Database.DatabaseError
 IntegrityError = Database.IntegrityError
 OperationalError = Database.OperationalError
@@ -46,8 +47,10 @@ class DatabaseOperations(BaseDatabaseOperations):
         trigger_sql = """
             CREATE TRIGGER %(tr_name)s FOR %(tbl_name)s
             BEFORE INSERT
-            AS BEGIN
-            NEW.%(col_name)s = GEN_ID(%(gn_name)s, 1);
+            AS 
+            BEGIN
+               IF (NEW.%(col_name)s IS NULL) THEN 
+                   NEW.%(col_name)s = GEN_ID(%(gn_name)s, 1);
             END""" % locals()
         return generator_sql, trigger_sql
 
@@ -68,8 +71,7 @@ class DatabaseOperations(BaseDatabaseOperations):
         return "CAST(%s AS TIMESTAMP)" % sql
 
     def last_insert_id(self, cursor, table_name, pk_name):
-        cursor.execute('SELECT GEN_ID(%s, 0) FROM rdb$database' %
-                                        (self.get_generator_name(table_name),))
+        cursor.execute('SELECT GEN_ID(%s, 0) FROM rdb$database' % (self.get_generator_name(table_name),))
         return cursor.fetchone()[0]
 
     def max_name_length(self):
@@ -77,10 +79,16 @@ class DatabaseOperations(BaseDatabaseOperations):
 
     def convert_values(self, value, field):
         return super(DatabaseOperations, self).convert_values(value, field)
+    
+#    def lookup_cast(self, lookup_type):
+#        #if lookup_type in ('icontains'):
+#        print self.connections.ops
+#        return '%s'
 
-    def query_class(self, DefaultQueryClass):
-        class FirebirdQuery(DefaultQueryClass):
-            def as_sql(self, with_limits=True, with_col_aliases=False):
+    def query_class(self, DefaultQueryClass):  
+              
+        class FirebirdQuery(DefaultQueryClass):                           
+            def as_sql(self, with_limits=False, with_col_aliases=False):
                 """
                 Return custom SQL. Use FIRST and SKIP statement instead of
                 LIMIT and OFFSET.
@@ -93,6 +101,14 @@ class DatabaseOperations(BaseDatabaseOperations):
 
                 qn = self.quote_name_unless_alias
                 where, w_params = self.where.as_sql(qn=qn)
+                
+                # Fix for icontins filter option.
+                # See http://code.google.com/p/django-firebird/issues/detail?id=4
+                # I don't like this solution so much. But... it's work. Need more test.                
+                
+                #if 'CONTAINING' in where:
+                #    w_params = [w_params[0].replace('%', '')]
+                
                 having, h_params = self.having.as_sql(qn=qn)
                 params = []
                 for val in self.extra_select.itervalues():
@@ -101,8 +117,7 @@ class DatabaseOperations(BaseDatabaseOperations):
                 result = ['SELECT']
                 if with_limits:
                     if self.high_mark is not None:
-                        result.append('FIRST %d' % (
-                                        self.high_mark - self.low_mark))
+                        result.append('FIRST %d' % (self.high_mark - self.low_mark))
                     if self.low_mark:
                         if self.high_mark is None:
                             val = self.connection.ops.no_limit_value()
@@ -206,7 +221,9 @@ class DatabaseWrapper(BaseDatabaseWrapper):
                 raise ImproperlyConfigured("You need to specify DATABASE_NAME in your Django settings file.")
             conn['dsn'] = settings_dict['DATABASE_NAME']
             if settings_dict['DATABASE_HOST']:
-                conn['dsn'] = settings_dict['DATABASE_HOST'] + ':' + conn['dsn']
+                conn['dsn'] = ('%s:%s') % (settings_dict['DATABASE_HOST'], conn['dsn'])
+            if settings_dict['DATABASE_PORT']:
+                conn['port'] = settings_dict['DATABASE_PORT']
             if settings_dict['DATABASE_USER']:
                 conn['user'] = settings_dict['DATABASE_USER']
             if settings_dict['DATABASE_PASSWORD']:
