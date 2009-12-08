@@ -47,6 +47,11 @@ class DatabaseOperations(BaseDatabaseOperations):
         self._engine_version = None
     
     def _get_engine_version(self):
+        """ 
+        Access method for engine_version property.
+        engine_version return a full version in string format 
+        (ie: 'WI-V6.3.5.4926 Firebird 1.5' )
+        """
         if self._engine_version is None:
             from django.db import connection            
             self._engine_version = connection.get_server_version()
@@ -54,6 +59,11 @@ class DatabaseOperations(BaseDatabaseOperations):
     engine_version = property(_get_engine_version)
     
     def _get_firebird_version(self):
+        """ 
+        Access method for firebird_version property.
+        firebird_version return the version number in a object list format
+        Useful for ask for just a part of a version number, for instance, major version is firebird_version[0]  
+        """
         return [int(val) for val in self.engine_version.split()[-1].split('.')]
     firebird_version = property(_get_firebird_version)
 
@@ -89,6 +99,17 @@ class DatabaseOperations(BaseDatabaseOperations):
         elif lookup_type == 'day':
             sql = "EXTRACT(year FROM %s)||'-'||EXTRACT(month FROM %s)||'-'||EXTRACT(day FROM %s)||' 00:00:00'" % (field_name, field_name, field_name)
         return "CAST(%s AS TIMESTAMP)" % sql
+    
+    def lookup_cast(self, lookup_type):
+        #if lookup_type in ('iexact', 'icontains', 'istartswith', 'iendswith'):
+        if lookup_type in ('iexact', 'istartswith', 'iendswith'):
+            return "UPPER(%s)"
+        return "%s"
+    
+    def fulltext_search_sql(self, field_name):
+        # We use varchar for TextFields so this is possible
+        # Look at http://www.volny.cz/iprenosil/interbase/ip_ib_strings.htm
+        return '%%s CONTAINING %s' % self.quote_name(field_name)
 
     def last_insert_id(self, cursor, table_name, pk_name):
         cursor.execute('SELECT GEN_ID(%s, 0) FROM rdb$database' % (self.get_generator_name(table_name),))
@@ -114,6 +135,7 @@ class DatabaseOperations(BaseDatabaseOperations):
     def get_trigger_name(self, table_name):
         name_length = DatabaseOperations().max_name_length() - 3
         return '%s_TR' % util.truncate_name(table_name, self.max_name_length() - 3).upper()
+    
     
 
 class DatabaseWrapper(BaseDatabaseWrapper):
@@ -225,12 +247,6 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             self.connection = Database.create_database(
                 "create database '%s' user '%s' password '%s' default character set %s"
                             % (conn['dsn'], conn['user'], conn['password'], conn['charset']))
-#        self.connection.set_type_trans_in({
-#            'TIMESTAMP' : (lambda s: smart_str(s)[:24]),
-#            'BOOLEAN' : (lambda b: 1 if b else 0),
-#            'TEXT' : smart_str,
-#            'BLOB' : smart_str,
-#            })
 
         self.FB_CHARSET_CODE = 3 #UNICODE_FSS
         if self.connection.charset == 'UTF8':
