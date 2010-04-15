@@ -177,7 +177,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         self.client = DatabaseClient(self)
         self.creation = DatabaseCreation(self)
         self.introspection = DatabaseIntrospection(self)
-        self.validation = BaseDatabaseValidation()
+        self.validation = BaseDatabaseValidation(self)
         
         
     def ascii_conv_in(self, text):
@@ -274,7 +274,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
     def _cursor(self):
         if self.connection is None:
             self._do_connect()
-        cursor = FirebirdCursorWrapper(self.connection)
+        cursor = CursorWrapper(self.connection.cursor())
         return cursor
     
     def get_server_version(self):
@@ -285,7 +285,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         return self._server_version
 
 
-class FirebirdCursorWrapper(object):
+class CursorWrapper(object):
     """
     Django uses "format" style placeholders, but firebird uses "qmark" style.
     This fixes it -- but note that if you want to use a literal "%s" in a query,
@@ -295,16 +295,22 @@ class FirebirdCursorWrapper(object):
     See: http://kinterbasdb.sourceforge.net/dist_docs/usage.html for Dynamic Type Translation
     """
     
-    def __init__(self, connection):
-        self.cursor = connection.cursor()
+    def __init__(self, cursor):
+        self.cursor = cursor
 
     def __getattr__(self, attr):
-        return getattr(self.cursor, attr)
+        if attr in self.__dict__:
+            return self.__dict__[attr]
+        else:
+            return getattr(self.cursor, attr)
+
+    def __iter__(self):
+        return iter(self.cursor)
     
-    def execute(self, query, params=()):
-        cquery = self.convert_query(query, len(params))
+    def execute(self, query, args=None):
+        cquery = self.convert_query(query, len(args))
         try:
-            return self.cursor.execute(cquery, params)
+            return self.cursor.execute(cquery, args)
         except Database.ProgrammingError, e:
             err_no = int(str(e).split()[0].strip(',()'))
             output = ["Execute query error. FB error No. %i" % err_no]
@@ -312,7 +318,7 @@ class FirebirdCursorWrapper(object):
             output.append("Query:")
             output.append(cquery)
             output.append("Parameters:")
-            output.append(str(params))
+            output.append(str(args))
             if err_no in (-803,):
                 raise IntegrityError("\n".join(output))
             raise DatabaseError("\n".join(output))
