@@ -4,7 +4,7 @@ Firebird database backend for Django.
 Requires kinterbasdb: http://www.firebirdsql.org/index.php?op=devel&sub=python
 """
 
-import re
+import re, sys
 
 try:
     import kinterbasdb as Database
