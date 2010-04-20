@@ -1,7 +1,8 @@
 """
 Firebird database backend for Django.
 
-Requires kinterbasdb: http://www.firebirdsql.org/index.php?op=devel&sub=python
+Requires KInterbasDB 3.3+: 
+http://www.firebirdsql.org/index.php?op=devel&sub=python
 """
 
 import re, sys
@@ -10,21 +11,16 @@ try:
     import kinterbasdb as Database
 except ImportError, e:
     from django.core.exceptions import ImproperlyConfigured
-    raise ImproperlyConfigured("Error loading kinterbasdb module: %s" % e)
+    raise ImproperlyConfigured("Unable to load KInterbasDB module: %s" % e)
 
 from django.db import utils
 from django.db.backends import *
 from django.db.backends.signals import connection_created
-from django.db.backends.firebird import query
 from django.db.backends.firebird.creation import DatabaseCreation
 from django.db.backends.firebird.introspection import DatabaseIntrospection
 from django.db.backends.firebird.client import DatabaseClient
 
-# Raise exceptions for database warnings if DEBUG is on
 from django.conf import settings
-#if settings.DEBUG:
-#    from warnings import filterwarnings
-#    filterwarnings("error", category=Warning)
 
 DatabaseError = Database.DatabaseError
 IntegrityError = Database.IntegrityError
@@ -61,31 +57,31 @@ class CursorWrapper(object):
             query = self.convert_query(query, len(args))
             return self.cursor.execute(query, args)
         except Database.IntegrityError, e:
-            raise utils.IntegrityError, utils.IntegrityError(*tuple(e)), sys.exc_info()[2]
+            raise utils.IntegrityError, utils.IntegrityError(*tuple(e)+('sql: '+query,)+args), sys.exc_info()[2]
         except Database.DatabaseError, e:
-            raise utils.DatabaseError, utils.DatabaseError(*tuple(e)), sys.exc_info()[2]
+            raise utils.DatabaseError, utils.DatabaseError(*tuple(e)+('sql: '+query,)+args), sys.exc_info()[2]
 
     def executemany(self, query, args):
         try:
             query = self.convert_query(query, len(args[0]))
             return self.cursor.executemany(query, args)
         except Database.IntegrityError, e:
-            raise utils.IntegrityError, utils.IntegrityError(*tuple(e)), sys.exc_info()[2]
+            raise utils.IntegrityError, utils.IntegrityError(*tuple(e)+('sql: '+query,)+args), sys.exc_info()[2]
         except Database.DatabaseError, e:
-            raise utils.DatabaseError, utils.DatabaseError(*tuple(e)), sys.exc_info()[2]
+            raise utils.DatabaseError, utils.DatabaseError(*tuple(e)+('sql: '+query,)+args), sys.exc_info()[2]
 
         
     def convert_query(self, query, num_params):
         return query % tuple("?" * num_params)
     
-#    def fetchone(self):
-#        return self.cursor.fetchone()
-#
-#    def fetchmany(self, size=None):
-#        return self.cursor.fetchmany(size)
-#
-#    def fetchall(self):
-#        return self.cursor.fetchall()
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchmany(self, size=None):
+        return self.cursor.fetchmany(size)
+
+    def fetchall(self):
+        return self.cursor.fetchall()
 
 class DatabaseFeatures(BaseDatabaseFeatures):
     """
@@ -100,9 +96,12 @@ class DatabaseOperations(BaseDatabaseOperations):
     a backend performs ordering or calculates the ID of a recently-inserted
     row.
     """
+    compiler_module = "django.db.backends.firebird.compiler"
 
-#    def __init__(self):
-#        self._engine_version = None
+    def __init__(self, dialect):
+        self.dialect = dialect
+        self._cache = {}
+        self._engine_version = None
     
     def _get_engine_version(self):
         """ 
@@ -185,9 +184,13 @@ class DatabaseOperations(BaseDatabaseOperations):
         return query.query_class(DefaultQueryClass)
             
     def quote_name(self, name):
-        if not name.startswith('"') and not name.endswith('"'):
-            name = '"%s"' % util.truncate_name(name, self.max_name_length())
-        return name.upper()
+        # Dialect differences as described in http://mc-computing.com/databases/Firebird/SQL_Dialect.html
+        if self.dialect==1:
+            name = name.upper()
+        else:
+            if not name.startswith('"') and not name.endswith('"'):
+                name = '"%s"' % util.truncate_name(name, self.max_name_length())
+        return name
 
     def get_generator_name(self, table_name):
         return '%s_GN' % util.truncate_name(table_name, self.max_name_length() - 3).upper()
@@ -223,9 +226,26 @@ class DatabaseWrapper(BaseDatabaseWrapper):
     def __init__(self, *args, **kwargs):
         super(DatabaseWrapper, self).__init__(*args, **kwargs)
 
+        settings_dict = self.settings_dict
+        self.settings = {
+            'charset': 'UNICODE_FSS',
+            'dialect': 3,
+        }
+        if settings_dict['HOST']:
+            self.settings['host'] = settings_dict['HOST']
+        if settings_dict['NAME']:
+            self.settings['database'] = settings_dict['NAME']
+        if settings_dict['USER']:
+            self.settings['user'] = settings_dict['USER']
+        if settings_dict['PASSWORD']:
+            self.settings['password'] = settings_dict['PASSWORD']               
+        self.settings.update(settings_dict['OPTIONS'])
+        
+        self.dialect = self.settings['dialect'];
+
         self.server_version = None
         self.features = DatabaseFeatures()
-        self.ops = DatabaseOperations()
+        self.ops = DatabaseOperations(dialect=self.dialect)
         self.client = DatabaseClient(self)
         self.creation = DatabaseCreation(self)
         self.introspection = DatabaseIntrospection(self)
@@ -236,22 +256,9 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         
         if self.connection is None:
             new_connection = True
-            settings_dict = self.settings_dict
-            kwargs = {
-                'charset': 'UNICODE_FSS',
-            }
-            if settings_dict['HOST']:
-                kwargs['host'] = settings_dict['HOST']
-            if settings_dict['NAME']:
-                kwargs['database'] = settings_dict['NAME']
-            if settings_dict['USER']:
-                kwargs['user'] = settings_dict['USER']
-            if settings_dict['PASSWORD']:
-                kwargs['password'] = settings_dict['PASSWORD']               
-            kwargs.update(settings_dict['OPTIONS'])
-            self.connection = Database.connect(**kwargs)
+            self.connection = Database.connect(**self.settings)
             connection_created.send(sender=self.__class__)
-            
+             
         cursor = self.connection.cursor()
         
         if new_connection:
@@ -301,7 +308,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
 
     def timestamp_conv_in(self, timestamp):
         if isinstance(timestamp, basestring):
-            #Replaces 6 digits microseconds to 4 digits allowed in Firebird
+            # Replaces 6 digits microseconds to 4 digits allowed in Firebird
             timestamp = timestamp[:24]
         return self.tc_dt.timestamp_conv_in(timestamp)
 
@@ -313,8 +320,13 @@ class DatabaseWrapper(BaseDatabaseWrapper):
 
     def date_conv_in(self, value):
         if isinstance(value, basestring):
-            #Replaces 6 digits microseconds to 4 digits allowed in Firebird
-            value = value[:24]
+            if self.dialect==1:
+                # Replaces 6 digits microseconds to 4 digits allowed in Firebird dialect 1
+                value = value[:24]
+            else:
+                # Time portion is not stored in dialect 3
+                value = value[:10]
+                
         return self.tc_dt.date_conv_in(value)
 
     def unicode_conv_in(self, text):
