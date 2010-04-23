@@ -6,6 +6,7 @@ http://www.firebirdsql.org/index.php?op=devel&sub=python
 """
 
 import re, sys
+from kinterbasdb import typeconv_datetime_mx
 
 try:
     import kinterbasdb as Database
@@ -21,6 +22,12 @@ from django.db.backends.firebird.introspection import DatabaseIntrospection
 from django.db.backends.firebird.client import DatabaseClient
 
 from django.conf import settings
+
+import django.utils.encoding as utils_encoding
+import kinterbasdb.typeconv_datetime_stdlib as typeconv_datetime
+import kinterbasdb.typeconv_fixed_decimal as typeconv_fixeddecimal
+import kinterbasdb.typeconv_text_unicode as typeconv_textunicode
+
 
 DatabaseError = Database.DatabaseError
 IntegrityError = Database.IntegrityError
@@ -88,7 +95,7 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     This class describes database specific features
     and limitations. 
     """
-    uses_custom_query_class = True
+    # none
     
 class DatabaseOperations(BaseDatabaseOperations):
     """
@@ -102,6 +109,7 @@ class DatabaseOperations(BaseDatabaseOperations):
         self.dialect = dialect
         self._cache = {}
         self._engine_version = None
+        self.FB_CHARSET_CODE = 3 #UNICODE_FSS
     
     def _get_engine_version(self):
         """ 
@@ -160,7 +168,6 @@ class DatabaseOperations(BaseDatabaseOperations):
         return "CAST(%s AS TIMESTAMP)" % sql
     
     def lookup_cast(self, lookup_type):
-        #if lookup_type in ('iexact', 'icontains', 'istartswith', 'iendswith'):
         if lookup_type in ('iexact', 'istartswith', 'iendswith'):
             return "UPPER(%s)"
         return "%s"
@@ -198,15 +205,63 @@ class DatabaseOperations(BaseDatabaseOperations):
     def get_trigger_name(self, table_name):
         name_length = DatabaseOperations().max_name_length() - 3
         return '%s_TR' % util.truncate_name(table_name, self.max_name_length() - 3).upper()
+
+    def year_lookup_bounds(self, value):
+        first = '%s-01-01'
+        second = self.conv_in_date('%s-12-31 23:59:59.999999' % value)
+        return [first % value, second]
+    
+    def conv_in_ascii(self, text):
+        if text is not None:  
+            return utils_encoding.smart_str(text, 'ascii')   
+
+    def conv_in_blob(self, text): 
+        return typeconv_textunicode.unicode_conv_in((utils_encoding.smart_unicode(text), self.FB_CHARSET_CODE))
+
+    def conv_in_fixed(self, (val, scale)):
+        if val is not None:
+            if isinstance(val, basestring):
+                val = decimal.Decimal(val)
+            return typeconv_fixeddecimal.fixed_conv_in_precise((val, scale))
+
+    def conv_in_timestamp(self, timestamp):
+        if isinstance(timestamp, basestring):
+            # Replaces 6 digits microseconds to 4 digits allowed in Firebird
+            timestamp = timestamp[:24]
+        return typeconv_datetime.timestamp_conv_in(timestamp)
+
+    def conv_in_time(self, value):
+        import datetime
+        if isinstance(value, datetime.datetime):
+            value = datetime.time(value.hour, value.minute, value.second, value.microsecond)
+        return typeconv_datetime.time_conv_in(value)   
+
+    def conv_in_date(self, value):
+        if isinstance(value, basestring):
+            if self.dialect==1:
+                # Replaces 6 digits microseconds to 4 digits allowed in Firebird dialect 1
+                value = value[:24]
+            else:
+                # Time portion is not stored in dialect 3
+                value = value[:10]
+                
+        return typeconv_datetime.date_conv_in(value)
+
+    def conv_in_unicode(self, text):
+        if text[0] is not None:
+            return typeconv_textunicode.unicode_conv_in((utils_encoding.smart_unicode(text[0]), self.FB_CHARSET_CODE))
+        
+    def conv_out_ascii(self, text):
+        if text is not None:
+            return utils_encoding.smart_unicode(text)
+        
+    def conv_out_blob(self, text):
+        return typeconv_textunicode.unicode_conv_out((text, self.FB_CHARSET_CODE))
     
 class DatabaseWrapper(BaseDatabaseWrapper):
     """
     Represents a database connection.
     """
-    import kinterbasdb.typeconv_datetime_stdlib as tc_dt
-    import kinterbasdb.typeconv_fixed_decimal as tc_fd
-    import kinterbasdb.typeconv_text_unicode as tc_tu
-    import django.utils.encoding as dj_ue
     
     operators = {
         'exact': '= %s',
@@ -261,77 +316,30 @@ class DatabaseWrapper(BaseDatabaseWrapper):
              
         cursor = self.connection.cursor()
         
-        if new_connection:
-            self.FB_CHARSET_CODE = 3 #UNICODE_FSS
+        if new_connection:           
             if self.connection.charset == 'UTF8':
-                self.FB_CHARSET_CODE = 4 # UTF-8 with Firebird 2.0+
+                self.ops.FB_CHARSET_CODE = 4 # UTF-8 with Firebird 2.0+
+
             self.connection.set_type_trans_in({
-                'DATE':             self.date_conv_in,
-                'TIME':             self.time_conv_in,
-                'TIMESTAMP':        self.timestamp_conv_in,
-                'FIXED':            self.fixed_conv_in,
-                'TEXT':             self.ascii_conv_in,
-                'TEXT_UNICODE':     self.unicode_conv_in,
-                'BLOB':             self.blob_conv_in
+                'DATE':             self.ops.conv_in_date,
+                'TIME':             self.ops.conv_in_time,
+                'TIMESTAMP':        self.ops.conv_in_timestamp,
+                'FIXED':            self.ops.conv_in_fixed,
+                'TEXT':             self.ops.conv_in_ascii,
+                'TEXT_UNICODE':     self.ops.conv_in_unicode,
+                'BLOB':             self.ops.conv_in_blob
             })
             self.connection.set_type_trans_out({
-                'DATE':             self.tc_dt.date_conv_out,
-                'TIME':             self.tc_dt.time_conv_out,
-                'TIMESTAMP':        self.tc_dt.timestamp_conv_out,
-                'FIXED':            self.tc_fd.fixed_conv_out_precise,
-                'TEXT':             self.ascii_conv_out,
-                'TEXT_UNICODE':     self.tc_tu.unicode_conv_out,
-                'BLOB':             self.blob_conv_out
+                'DATE':             typeconv_datetime.date_conv_out,
+                'TIME':             typeconv_datetime.time_conv_out,
+                'TIMESTAMP':        typeconv_datetime.timestamp_conv_out,
+                'FIXED':            typeconv_fixeddecimal.fixed_conv_out_precise,
+                'TEXT':             self.ops.conv_out_ascii,
+                'TEXT_UNICODE':     typeconv_textunicode.unicode_conv_out,
+                'BLOB':             self.ops.conv_out_blob
             })
         
         return CursorWrapper(cursor)
-    
-    def ascii_conv_in(self, text):
-        if text is not None:  
-            return self.dj_ue.smart_str(text, 'ascii')
-
-    def ascii_conv_out(self, text):
-        if text is not None:
-            return self.dj_ue.smart_unicode(text)   
-
-    def blob_conv_in(self, text): 
-        return self.tc_tu.unicode_conv_in((self.dj_ue.smart_unicode(text), self.FB_CHARSET_CODE))
-
-    def blob_conv_out(self, text):
-        return self.tc_tu.unicode_conv_out((text, self.FB_CHARSET_CODE))   
-
-    def fixed_conv_in(self, (val, scale)):
-        if val is not None:
-            if isinstance(val, basestring):
-                val = decimal.Decimal(val)
-            return self.tc_fd.fixed_conv_in_precise((val, scale))
-
-    def timestamp_conv_in(self, timestamp):
-        if isinstance(timestamp, basestring):
-            # Replaces 6 digits microseconds to 4 digits allowed in Firebird
-            timestamp = timestamp[:24]
-        return self.tc_dt.timestamp_conv_in(timestamp)
-
-    def time_conv_in(self, value):
-        import datetime
-        if isinstance(value, datetime.datetime):
-            value = datetime.time(value.hour, value.minute, value.second, value.microsecond)
-        return self.tc_dt.time_conv_in(value)   
-
-    def date_conv_in(self, value):
-        if isinstance(value, basestring):
-            if self.dialect==1:
-                # Replaces 6 digits microseconds to 4 digits allowed in Firebird dialect 1
-                value = value[:24]
-            else:
-                # Time portion is not stored in dialect 3
-                value = value[:10]
-                
-        return self.tc_dt.date_conv_in(value)
-
-    def unicode_conv_in(self, text):
-        if text[0] is not None:
-            return self.tc_tu.unicode_conv_in((self.dj_ue.smart_unicode(text[0]), self.FB_CHARSET_CODE))
 
     def get_server_version(self):
         if not self.server_version:
