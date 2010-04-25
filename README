@@ -2,10 +2,12 @@
 
 django-firebird
 
-  Firebird backend for Django
+  Firebird backend for Django 1.2+
   Github fork
 
 ===============
 
-Note: Original django-firebird could be found at http://code.google.com/p/django-firebird/
-This project (http://github.com/idlesign/django-firebird) is a Github fork from the original django-firebird.
+Notes: 
+* Original django-firebird could be found at http://code.google.com/p/django-firebird/
+* This project (http://github.com/idlesign/django-firebird) is a Github fork from the original django-firebird.
+* This project aimed to Django 1.2 and above.

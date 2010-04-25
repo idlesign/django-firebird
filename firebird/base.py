@@ -28,7 +28,6 @@ import kinterbasdb.typeconv_datetime_stdlib as typeconv_datetime
 import kinterbasdb.typeconv_fixed_decimal as typeconv_fixeddecimal
 import kinterbasdb.typeconv_text_unicode as typeconv_textunicode
 
-
 DatabaseError = Database.DatabaseError
 IntegrityError = Database.IntegrityError
 OperationalError = Database.OperationalError
@@ -61,8 +60,13 @@ class CursorWrapper(object):
 
     def execute(self, query, args=None):
         try:
-            query = self.convert_query(query, len(args))
-            return self.cursor.execute(query, args)
+            #print query, args
+            if args==None:
+                args = ()
+                return self.cursor.execute(query)
+            else:
+                query = self.convert_query(query, len(args))
+                return self.cursor.execute(query, args)
         except Database.IntegrityError, e:
             raise utils.IntegrityError, utils.IntegrityError(*tuple(e)+('sql: '+query,)+args), sys.exc_info()[2]
         except Database.DatabaseError, e:
@@ -70,8 +74,13 @@ class CursorWrapper(object):
 
     def executemany(self, query, args):
         try:
-            query = self.convert_query(query, len(args[0]))
-            return self.cursor.executemany(query, args)
+            print query, args
+            if args==None:
+                args = ()
+                return self.cursor.executemany(query)
+            else:
+                query = self.convert_query(query, len(args[0]))
+                return self.cursor.executemany(query, args)
         except Database.IntegrityError, e:
             raise utils.IntegrityError, utils.IntegrityError(*tuple(e)+('sql: '+query,)+args), sys.exc_info()[2]
         except Database.DatabaseError, e:
@@ -89,14 +98,7 @@ class CursorWrapper(object):
 
     def fetchall(self):
         return self.cursor.fetchall()
-
-class DatabaseFeatures(BaseDatabaseFeatures):
-    """
-    This class describes database specific features
-    and limitations. 
-    """
-    # none
-    
+ 
 class DatabaseOperations(BaseDatabaseOperations):
     """
     This class encapsulates all backend-specific differences, such as the way
@@ -299,7 +301,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         self.dialect = self.settings['dialect'];
 
         self.server_version = None
-        self.features = DatabaseFeatures()
+        self.features = BaseDatabaseFeatures()
         self.ops = DatabaseOperations(dialect=self.dialect)
         self.client = DatabaseClient(self)
         self.creation = DatabaseCreation(self)
