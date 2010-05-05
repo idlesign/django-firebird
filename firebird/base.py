@@ -32,8 +32,6 @@ DatabaseError = Database.DatabaseError
 IntegrityError = Database.IntegrityError
 OperationalError = Database.OperationalError
 
-server_version_re = re.compile(r'(\d{1,2})\.(\d{1,2})\.(\d{1,2})')
-
 class CursorWrapper(object):
     """
     A thin wrapper around kinterbasdb cursor class so that we can catch
@@ -99,6 +97,18 @@ class CursorWrapper(object):
     def fetchall(self):
         return self.cursor.fetchall()
  
+class DatabaseFeatures(BaseDatabaseFeatures):
+    """
+    This class defines bd-specific features.
+    
+    - can_return_id_from_insert 
+        return insert id right in SELECT statements
+        as described at http://firebirdfaq.org/faq243/
+        for Firebird 2+
+    
+    """
+    can_return_id_from_insert = False
+ 
 class DatabaseOperations(BaseDatabaseOperations):
     """
     This class encapsulates all backend-specific differences, such as the way
@@ -113,29 +123,6 @@ class DatabaseOperations(BaseDatabaseOperations):
         self._engine_version = None
         self.FB_CHARSET_CODE = 3 #UNICODE_FSS
     
-    def _get_engine_version(self):
-        """ 
-        Access method for engine_version property.
-        engine_version return a full version in string format 
-        (ie: 'WI-V6.3.5.4926 Firebird 1.5' )
-        """
-        if self._engine_version is None:
-            from django.db import connection            
-            self._engine_version = connection.get_server_version()
-        return self._engine_version
-    
-    engine_version = property(_get_engine_version)    
-    
-    def _get_firebird_version(self):
-        """ 
-        Access method for firebird_version property.
-        firebird_version return the version number in a object list format
-        Useful for ask for just a part of a version number, for instance, major version is firebird_version[0]  
-        """
-        return [int(val) for val in self.engine_version.split()[-1].split('.')]
-    
-    firebird_version = property(_get_firebird_version)
-
     def autoinc_sql(self, table, column):
         # To simulate auto-incrementing primary keys in Firebird, we have to create a generator and a trigger.
         gn_name = self.quote_name(self.get_generator_name(table))
@@ -179,7 +166,11 @@ class DatabaseOperations(BaseDatabaseOperations):
         # Look at http://www.volny.cz/iprenosil/interbase/ip_ib_strings.htm
         return '%%s CONTAINING %s' % self.quote_name(field_name)
 
+    def return_insert_id(self):
+        return 'RETURNING %s', ()
+
     def last_insert_id(self, cursor, table_name, pk_name):
+        # This method is unreliable, but nothing else could be done in Firebird prior 2
         cursor.execute('SELECT GEN_ID(%s, 0) FROM rdb$database' % (self.get_generator_name(table_name),))
         return cursor.fetchone()[0]
 
@@ -301,7 +292,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         self.dialect = self.settings['dialect'];
 
         self.server_version = None
-        self.features = BaseDatabaseFeatures()
+        self.features = DatabaseFeatures()
         self.ops = DatabaseOperations(dialect=self.dialect)
         self.client = DatabaseClient(self)
         self.creation = DatabaseCreation(self)
@@ -318,7 +309,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
              
         cursor = self.connection.cursor()
         
-        if new_connection:           
+        if new_connection:
             if self.connection.charset == 'UTF8':
                 self.ops.FB_CHARSET_CODE = 4 # UTF-8 with Firebird 2.0+
 
@@ -340,15 +331,15 @@ class DatabaseWrapper(BaseDatabaseWrapper):
                 'TEXT_UNICODE':     typeconv_textunicode.unicode_conv_out,
                 'BLOB':             self.ops.conv_out_blob
             })
+            
+            version = re.search(r'\s(\d{1,2})\.(\d{1,2})', self.connection.server_version)
+            self.server_version = tuple([int(x) for x in version.groups()])
+            
+            # feature for Firebird version 2 and above
+            if self.server_version[0] >=2:
+                self.features.can_return_id_from_insert = True
         
         return CursorWrapper(cursor)
 
-    def get_server_version(self):
-        if not self.server_version:
-            if not self._valid_connection():
-                self.cursor()
-            m = server_version_re.match(self.connection.get_server_info())
-            if not m:
-                raise Exception('Unable to determine Firebird version from version string %r' % self.connection.get_server_info())
-            self.server_version = tuple([int(x) for x in m.groups()])
+    def get_server_version(self):           
         return self.server_version

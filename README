@@ -10,4 +10,10 @@ django-firebird
 Notes: 
 * Original django-firebird could be found at http://code.google.com/p/django-firebird/
 * This project (http://github.com/idlesign/django-firebird) is a Github fork from the original django-firebird.
-* This project aimed to Django 1.2 and above.
+
+Required:
+* Django 1.2+
+* KInterbasDB 3.3+
+
+Strongly advised:
+* Firebird 2+
