@@ -57,6 +57,13 @@ class CursorWrapper(object):
         return iter(self.cursor)
 
     def execute(self, query, args=None):
+        
+        # This is a workaround for KInterbasDB locks
+        if query.find('DROP') != -1:
+            # self.cursor.close()
+            # someday will recreate cursor here 
+            pass
+            
         try:
             #print query, args
             if args==None:
@@ -72,7 +79,7 @@ class CursorWrapper(object):
 
     def executemany(self, query, args):
         try:
-            print query, args
+            #print query, args
             if args==None:
                 args = ()
                 return self.cursor.executemany(query)
@@ -117,7 +124,7 @@ class DatabaseOperations(BaseDatabaseOperations):
     """
     compiler_module = "django.db.backends.firebird.compiler"
 
-    def __init__(self, dialect):
+    def __init__(self, dialect=3):
         self.dialect = dialect
         self._cache = {}
         self._engine_version = None
@@ -170,7 +177,7 @@ class DatabaseOperations(BaseDatabaseOperations):
         return 'RETURNING %s', ()
 
     def last_insert_id(self, cursor, table_name, pk_name):
-        # This method is unreliable, but nothing else could be done in Firebird prior 2
+        # Method used for Firebird prior 2. Method is unreliable, but nothing else could be done
         cursor.execute('SELECT GEN_ID(%s, 0) FROM rdb$database' % (self.get_generator_name(table_name),))
         return cursor.fetchone()[0]
 
@@ -215,7 +222,9 @@ class DatabaseOperations(BaseDatabaseOperations):
         if val is not None:
             if isinstance(val, basestring):
                 val = decimal.Decimal(val)
-            return typeconv_fixeddecimal.fixed_conv_in_precise((val, scale))
+            # fixed_conv_in_precise produces weird numbers
+            # return typeconv_fixeddecimal.fixed_conv_in_precise((val, scale))
+            return int(val.to_integral())
 
     def conv_in_timestamp(self, timestamp):
         if isinstance(timestamp, basestring):

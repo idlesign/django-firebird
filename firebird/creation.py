@@ -1,15 +1,18 @@
+import re
 from django.conf import settings
 from django.db.backends.creation import BaseDatabaseCreation
 
+precision_re = re.compile(r'\((\d{1,2}), (\d{1,2})\)')
+
 class DatabaseCreation(BaseDatabaseCreation):
+
     # This dictionary maps Field objects to their associated Firebird column
     # types, as strings. Column-type strings can contain format strings; they'll
     # be interpolated against the values of Field.__dict__ before being output.
     # If a column type is set to None, it won't be included in the output.
     #
     # Any format strings starting with "qn_" are quoted before being used in the
-    # output (the "qn_" prefix is stripped before the lookup is performed.
-
+    # output (the "qn_" prefix is stripped before the lookup is performed.    
     data_types = {
         'AutoField':         'integer',
         'BooleanField':      'integer',
@@ -37,101 +40,44 @@ class DatabaseCreation(BaseDatabaseCreation):
         """
         Returns the SQL required to create a single model, as a tuple of:
             (list_of_sql, pending_references_dict)
+            
+        This method takes the result from BaseDatabaseCreation.sql_create_model(),
+        and makes some Firebird specific changes to sql.
         """
-        from django.db import models
-        opts = model._meta
-        if not opts.managed:
-            return [], {}
-        final_output = []
-        table_output = []
-        pending_references = {}
-        qn = self.connection.ops.quote_name
-        for f in opts.local_fields:
-            col_type = f.db_type()
-            tablespace = f.db_tablespace or opts.db_tablespace
-            if col_type is None:
-                # Skip ManyToManyFields, because they're not represented as
-                # database columns in this table.
-                continue
-            # Make the definition (e.g. 'foo VARCHAR(30)') for this field.
-            field_output = [style.SQL_FIELD(qn(f.column)), style.SQL_COLTYPE(col_type)]          
-            if not f.null:
-                # Workaraund  for Firebird 1.5 : the NOT NULL keyword should be located after field constraint definition
-				# Mark '%' is 'NOT NULL' placeholder
-                if field_output[-1].find('%') == -1:
-                    field_output.append(style.SQL_KEYWORD('NOT NULL'))
-                else:
-                    field_output[-1] = field_output[-1].replace('%', style.SQL_KEYWORD('NOT NULL'))
-            elif field_output[-1].find('%'):    # Erase placeholder
-                field_output[-1] = field_output[-1].replace('%','')
-            if f.primary_key:
-                field_output.append(style.SQL_KEYWORD('PRIMARY KEY'))
-            elif f.unique:
-                field_output.append(style.SQL_KEYWORD('UNIQUE'))
-            if tablespace and f.unique:
-                # We must specify the index tablespace inline, because we
-                # won't be generating a CREATE INDEX statement for this field.
-                field_output.append(self.connection.ops.tablespace_sql(tablespace, inline=True))
-            if f.rel:
-                ref_output, pending = self.sql_for_inline_foreign_key_references(f, known_models, style)
-                if pending:
-                    pr = pending_references.setdefault(f.rel.to, []).append((model, f))
-                else:
-                    field_output.extend(ref_output)
-            table_output.append(' '.join(field_output))
-        if opts.order_with_respect_to:
-            table_output.append(style.SQL_FIELD(qn('_order')) + ' ' + \
-                style.SQL_COLTYPE(models.IntegerField().db_type()))
-        for field_constraints in opts.unique_together:
-            table_output.append(style.SQL_KEYWORD('UNIQUE') + ' (%s)' % \
-                ", ".join([style.SQL_FIELD(qn(opts.get_field(f).column)) for f in field_constraints]))
-
-        full_statement = [style.SQL_KEYWORD('CREATE TABLE') + ' ' + style.SQL_TABLE(qn(opts.db_table)) + ' (']
-        for i, line in enumerate(table_output): # Combine and add commas.
-            full_statement.append('    %s%s' % (line, i < len(table_output)-1 and ',' or ''))
-        full_statement.append(')')
-        if opts.db_tablespace:
-            full_statement.append(self.connection.ops.tablespace_sql(opts.db_tablespace))
-        full_statement.append(';')
-        final_output.append('\n'.join(full_statement))
-
-        if opts.has_auto_field:
-            # Add any extra SQL needed to support auto-incrementing primary keys.
-            auto_column = opts.auto_field.db_column or opts.auto_field.name
-            autoinc_sql = self.connection.ops.autoinc_sql(opts.db_table, auto_column)
-            if autoinc_sql:
-                for stmt in autoinc_sql:
-                    final_output.append(stmt)
-
-        return final_output, pending_references
+        
+        def precision_replace(matchobj):
+            precision = matchobj.group(1)
+            scale = matchobj.group(2)             
+            if precision > 18:
+                precision = 18
+            if scale > 18:
+                scale = 18
+            return '('+str(precision)+', '+str(scale)+')'
+        
+        final_output, pending_references = super(DatabaseCreation, self).sql_create_model(model=model, style=style, known_models=known_models)
+        
+        output_parts = []
+        for part in final_output:
+            output = ''
+            for line in part.splitlines(True):
+                # Precision and scale should be in range from 1 to 18
+                # http://ibexpert.net/ibe/index.php?n=Doc.FieldDefinitions#NUMERIC
+                if 'numeric(' in line:
+                    line = re.sub(precision_re, precision_replace, line)
+                # NOT NULL keyword should be located after field constraint definition
+                if '%' in line:
+                    if 'NOT NULL' in line:
+                        line = line.replace('NOT NULL', '').replace('%', 'NOT NULL')
+                    else:
+                        line = line.replace('%', '')
+                output += line
+            output_parts.append(output)
+                 
+        return output_parts, pending_references
     
     def _create_test_db(self, verbosity, autoclobber):
         test_database_name = self.connection.settings_dict['TEST_NAME']
-        if test_database_name and test_database_name != ":memory:":
-            # Erase the old test database
-            if verbosity >= 1:
-                print "Destroying old test database..."
-            if os.access(test_database_name, os.F_OK):
-                if not autoclobber:
-                    confirm = raw_input("Type 'yes' if you would like to try deleting the test database '%s', or 'no' to cancel: " % test_database_name)
-                if autoclobber or confirm == 'yes':
-                  try:
-                      if verbosity >= 1:
-                          print "Destroying old test database..."
-                      os.remove(test_database_name)
-                  except Exception, e:
-                      sys.stderr.write("Got an error deleting the old test database: %s\n" % e)
-                      sys.exit(2)
-                else:
-                    print "Tests cancelled."
-                    sys.exit(1)
-            if verbosity >= 1:
-                print "Creating test database..."
-        else:
-            test_database_name = ":memory:"
         return test_database_name
 
     def _destroy_test_db(self, test_database_name, verbosity):
-        if test_database_name and test_database_name != ":memory:":
-            # Remove the SQLite database file
-            os.remove(test_database_name)
+        pass
