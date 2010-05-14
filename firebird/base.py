@@ -5,7 +5,9 @@ Requires KInterbasDB 3.3+:
 http://www.firebirdsql.org/index.php?op=devel&sub=python
 """
 
-import re, sys
+import re
+import sys
+import base64
 from kinterbasdb import typeconv_datetime_mx
 
 try:
@@ -197,6 +199,9 @@ class DatabaseOperations(BaseDatabaseOperations):
         else:
             if not name.startswith('"') and not name.endswith('"'):
                 name = '"%s"' % util.truncate_name(name, self.max_name_length())
+            # Handle RDB$DB_KEY calls
+            if name.find('RDB$DB_KEY') > -1:
+                name = name.strip('"')
         return name
 
     def get_generator_name(self, table_name):
@@ -212,7 +217,11 @@ class DatabaseOperations(BaseDatabaseOperations):
         return [first % value, second]
     
     def conv_in_ascii(self, text):
-        if text is not None:  
+        if text is not None:
+            # Handle binary data from RDB$DB_KEY calls
+            if (text.startswith('base64')):
+                return base64.b64decode(text.lstrip('base64'))
+            
             return utils_encoding.smart_str(text, 'ascii')   
 
     def conv_in_blob(self, text): 
@@ -255,7 +264,11 @@ class DatabaseOperations(BaseDatabaseOperations):
         
     def conv_out_ascii(self, text):
         if text is not None:
-            return utils_encoding.smart_unicode(text)
+            # Handle binary data from RDB$DB_KEY calls
+            if "\0" in text:
+                return 'base64'+base64.b64encode(text)
+            
+            return utils_encoding.smart_unicode(text, strings_only=True)
         
     def conv_out_blob(self, text):
         return typeconv_textunicode.unicode_conv_out((text, self.FB_CHARSET_CODE))
