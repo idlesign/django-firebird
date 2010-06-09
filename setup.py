@@ -1,25 +1,25 @@
+import os
 from setuptools import setup, find_packages
+from firebird import VERSION
+
+f = open(os.path.join(os.path.dirname(__file__), 'README'))
+readme = f.read()
+f.close()
 
 setup(
-    name = "django-firebird",
-    version = "0.1",
-    url = 'http://code.google.com/p/django-firebird/',
-    license = 'BSD',
-    description = "Firebird backend for Django.",
-
-    packages = find_packages('firebird'),
-    package_dir = {'': 'firebird'},
-
-    install_requires = ['setuptools'],
-
-    classifiers = [
-        'Development Status :: 3 - Alpha',
+    name='django-firebird',
+    version=".".join(map(str, VERSION)),
+    description='Firebird backend for Django 1.2+.',
+    long_description=readme,
+    url='http://github.com/idlesign/django-firebird',
+    packages=find_packages(),
+    classifiers=[
+	'Development Status :: 4 - Beta',
+        'Environment :: Web Environment',
         'Framework :: Django',
         'Intended Audience :: Developers',
         'License :: OSI Approved :: BSD License',
         'Operating System :: OS Independent',
         'Programming Language :: Python',
-        'Topic :: Internet :: WWW/HTTP',
-    ]
-
+    ],
 )

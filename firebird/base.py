@@ -19,9 +19,10 @@ except ImportError, e:
 from django.db import utils
 from django.db.backends import *
 from django.db.backends.signals import connection_created
-from django.db.backends.firebird.creation import DatabaseCreation
-from django.db.backends.firebird.introspection import DatabaseIntrospection
-from django.db.backends.firebird.client import DatabaseClient
+
+from firebird.creation import DatabaseCreation
+from firebird.introspection import DatabaseIntrospection
+from firebird.client import DatabaseClient
 
 from django.conf import settings
 
@@ -124,7 +125,7 @@ class DatabaseOperations(BaseDatabaseOperations):
     a backend performs ordering or calculates the ID of a recently-inserted
     row.
     """
-    compiler_module = "django.db.backends.firebird.compiler"
+    compiler_module = 'firebird.compiler'
 
     def __init__(self, dialect=3):
         self.dialect = dialect
