@@ -313,6 +313,9 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         self.settings.update(settings_dict['OPTIONS'])
         
         self.dialect = self.settings['dialect'];
+        
+        if 'init_params' in self.settings:
+            Database.init(**self.settings['init_params'])
 
         self.server_version = None
         self.features = DatabaseFeatures()
