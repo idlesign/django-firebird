@@ -8,7 +8,6 @@ http://www.firebirdsql.org/index.php?op=devel&sub=python
 import re
 import sys
 import base64
-from kinterbasdb import typeconv_datetime_mx
 
 try:
     import kinterbasdb as Database
