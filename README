@@ -3,7 +3,7 @@
 django-firebird
 
   Firebird backend for Django 1.2+
-  Github fork
+  GitHub fork
 
 
 Notes: 
@@ -74,3 +74,14 @@ Firebird allows to check for internal table’s ‘RDB$DB_KEY’ field.
 
 In a model you can define this field as follows:
 DB_KEY = models.CharField(primary_key=True, db_column='RDB$DB_KEY', max_length=10)
+
+2. What if you want to pass some params to KInterbasDB init() method?
+Define params to database configuration OPTIONS dictionary 'init_params' item like this:
+
+    'fb': {
+        'ENGINE': 'firebird',
+        ...
+        'OPTIONS': {'init_params': {'type_conv':0}},  # This sets type_conv option to 0. Insane am I? %)
+        ...
+    }
+
