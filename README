@@ -40,7 +40,7 @@ DATABASES = {
         'PASSWORD': 'passw',
         'HOST': '127.0.0.1',
         'PORT': '3050',
-        'OPTIONS': {'charset':'WIN1251', dialect:1} ,
+        'OPTIONS': {'charset':'WIN1251', 'dialect':1} ,
     }
 }
 
@@ -76,7 +76,7 @@ In a model you can define this field as follows:
 DB_KEY = models.CharField(primary_key=True, db_column='RDB$DB_KEY', max_length=10)
 
 2. What if you want to pass some params to KInterbasDB init() method?
-Define params to database configuration OPTIONS dictionary 'init_params' item like this:
+Define params in database configuration OPTIONS dictionary 'init_params' item like this:
 
     'fb': {
         'ENGINE': 'firebird',
