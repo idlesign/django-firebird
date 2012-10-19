@@ -68,7 +68,7 @@ class CursorWrapper(object):
             
         try:
             #print query, args
-            if args==None:
+            if not args:
                 args = ()
                 return self.cursor.execute(query)
             else:
@@ -82,7 +82,7 @@ class CursorWrapper(object):
     def executemany(self, query, args):
         try:
             #print query, args
-            if args==None:
+            if not args:
                 args = ()
                 return self.cursor.executemany(query)
             else:
@@ -126,9 +126,10 @@ class DatabaseOperations(BaseDatabaseOperations):
     """
     compiler_module = 'firebird.compiler'
 
-    def __init__(self, dialect=3):
+    def __init__(self, connection, dialect=3):
+        super(DatabaseOperations, self).__init__(connection)
         self.dialect = dialect
-        self._cache = {}
+        self._cache = None
         self._engine_version = None
         self.FB_CHARSET_CODE = 3 #UNICODE_FSS
     
@@ -208,7 +209,6 @@ class DatabaseOperations(BaseDatabaseOperations):
         return '%s_GN' % util.truncate_name(table_name, self.max_name_length() - 3).upper()
 
     def get_trigger_name(self, table_name):
-        name_length = DatabaseOperations().max_name_length() - 3
         return '%s_TR' % util.truncate_name(table_name, self.max_name_length() - 3).upper()
 
     def year_lookup_bounds(self, value):
@@ -219,7 +219,7 @@ class DatabaseOperations(BaseDatabaseOperations):
     def conv_in_ascii(self, text):
         if text is not None:
             # Handle binary data from RDB$DB_KEY calls
-            if (text.startswith('base64')):
+            if text.startswith('base64'):
                 return base64.b64decode(text.lstrip('base64'))
             
             return utils_encoding.smart_str(text, 'ascii')   
@@ -311,14 +311,14 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             self.settings['password'] = settings_dict['PASSWORD']               
         self.settings.update(settings_dict['OPTIONS'])
         
-        self.dialect = self.settings['dialect'];
+        self.dialect = self.settings['dialect']
         
         if 'init_params' in self.settings:
             Database.init(**self.settings['init_params'])
 
         self.server_version = None
-        self.features = DatabaseFeatures()
-        self.ops = DatabaseOperations(dialect=self.dialect)
+        self.features = DatabaseFeatures(self)
+        self.ops = DatabaseOperations(self, dialect=self.dialect)
         self.client = DatabaseClient(self)
         self.creation = DatabaseCreation(self)
         self.introspection = DatabaseIntrospection(self)
